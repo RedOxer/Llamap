@@ -120,6 +120,28 @@ Spearman correlation with the measured ΔKL, Q2_K, all block matrices:
   error grows with depth (correlation with the layer index 0.87). The output KL
   removes most of this bias (0.41). Within a role, the rank correlation on
   SmolLM2 goes from −0.45…+0.38 to +0.60…+0.88.
+- **Calibration text.** The costs come from 512 tokens of calibration text. On
+  Llama 3.1 8B, with the same imatrix, the costs were recomputed from four texts:
+  the default wikitext-2 train excerpt, another wikitext-2 train excerpt, Python
+  code (`argparse.py` from the standard library) and UltraChat `train_sft`
+  conversations as plain `User:` / `Assistant:` text. Spearman correlation of the
+  costs within a format: 0.88 between the two wikitext excerpts, 0.87 between
+  wikitext and code, 0.58 between wikitext and chat. Mean KL of the maps on the
+  five evaluation texts (test, book, code, chat, chat template):
+
+  | Calibration | Q2 | Q3 | Q4 | Q5 |
+  |---|---|---|---|---|
+  | wikitext (default) | 0.178 | 0.0707 | 0.0298 | 0.0105 |
+  | wikitext, other excerpt | 0.181 | 0.0710 | 0.0294 | 0.0103 |
+  | Python code | 0.181 | 0.0721 | 0.0284 | 0.0101 |
+  | UltraChat, plain text | 0.215 | 0.0935 | 0.0378 | 0.0146 |
+  | *EAddario, for reference* | *0.190* | *0.0735* | *0.0309* | *0.0121* |
+
+  Prose and code give maps of the same quality: many tensors change format
+  between them, but no more than between two wikitext excerpts, so these are
+  near-ties. The chat calibration gives worse maps on every text, chat included,
+  and loses to EAddario at every budget. Use prose or code to calibrate.
+  (`bench/calib_t.py`)
 - **Fisher vs exact.** On Llama 3.1 8B, the 11 formats (2 464 tensor × format
   pairs) give a Spearman correlation of 0.998 with 128 samples. With 32 samples,
   the noise changes enough choices at the margin to visibly degrade the Q5 map:
@@ -181,6 +203,8 @@ llama-quantize --imatrix X.imatrix.gguf --target-bpw 3 --target-exclude \
     X-bf16.gguf ea.gguf > eaddario-q2_k.log 2>&1   # PR #15550 build
 python bench/validate_t.py --truth truth-q2_k.csv --costs exact=work/X/costs-exact.csv \
     --costs fisher=work/X/costs-fisher.csv --eaddario-log eaddario-q2_k.log --bf16 X-bf16.gguf --imatrix X.imatrix.gguf
+# calibration text: one work directory per --calib, then costs and maps compared
+python bench/calib_t.py wiki=work/X wiki2=work/X-wiki2 chat=work/X-chat code=work/X-code
 # the image
 python bench/plot_maps_t.py --out maps.png unsloth=X-UD-Q5_K_XL.gguf eaddario=X-eaddario-Q5.gguf \
     llamap=work/X/map-X-eaddario-Q5-fisher.tensor-types.txt
@@ -225,6 +249,7 @@ python bench/plot_maps_t.py --out maps.png unsloth=X-UD-Q5_K_XL.gguf eaddario=X-
 | `llamap/cli.py` | command line |
 | `tests/*_t.py` | unit tests (`pytest`) |
 | `bench/truth_t.py`, `bench/validate_t.py` | degrade-one ground truth, predictors against it |
+| `bench/calib_t.py` | stability of the costs and maps across calibration texts |
 | `bench/perplexity/` | `llama-perplexity` rebuilt with special-token parsing |
 | `bench/*_t.py` | other measurements: KL against BF16, Fisher vs exact costs, additivity, map heatmaps |
 
