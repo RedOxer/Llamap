@@ -21,18 +21,18 @@ class LlamaCpp:
         if missing or not (self.root / "convert_hf_to_gguf.py").exists():
             raise FileNotFoundError(f"incomplete llama.cpp build in {self.root}: {missing or 'convert_hf_to_gguf.py'}")
 
-    def _run(self, cmd):
+    def run(self, cmd):
         r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"{Path(cmd[0]).name} failed:\n{r.stderr[-2000:]}")
         return r.stdout
 
     def tool(self, name, *args):
-        return self._run([self.bin / name, *args])
+        return self.run([self.bin / name, *args])
 
     def convert(self, hf_dir, out):
         """HF model -> BF16 GGUF."""
-        self._run([sys.executable, self.root / "convert_hf_to_gguf.py", hf_dir, "--outtype", "bf16", "--outfile", out])
+        self.run([sys.executable, self.root / "convert_hf_to_gguf.py", hf_dir, "--outtype", "bf16", "--outfile", out])
 
     def imatrix(self, model, text, out, chunks=200, ctx=512):
         self.tool("llama-imatrix", "-m", model, "-f", text, "-c", ctx, "--chunks", chunks, "-ngl", 99, "-o", out)

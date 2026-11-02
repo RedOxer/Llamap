@@ -5,3 +5,4 @@ __pycache__/
 *.dat
 *.kld
 work/
+bench/perplexity/build/

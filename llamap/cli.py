@@ -3,6 +3,7 @@
   llamap map ~/models/Llama-3.1-8B-Instruct --like Q4_K_M --calib calib.txt
   llamap map ~/models/Llama-3.1-8B-Instruct --like other-Q5.gguf --calib calib.txt --imatrix other.imatrix
   llamap map ~/models/SmolLM2-1.7B --like Q4_K_M --calib calib.txt --method exact
+  llamap costs ~/models/SmolLM2-1.7B --calib calib.txt --formats q2_k --method exact
 """
 import argparse
 import os
@@ -17,19 +18,21 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="llamap", description="Per-tensor precision maps for llama.cpp / GGUF")
     sub = p.add_subparsers(dest="command", required=True)
     m = sub.add_parser("map", help="compute the map under a budget and build the GGUF")
-    m.add_argument("hf_dir", help="Hugging Face model directory")
+    c = sub.add_parser("costs", help="only compute the costs (work/<model>/costs-<method>.csv)")
     m.add_argument("--like", required=True, help="budget: a reference GGUF, or a llama-quantize preset (Q4_K_M...)")
-    m.add_argument("--calib", required=True, help="calibration text (imatrix and cost prediction)")
-    m.add_argument("--imatrix", help="existing imatrix (otherwise computed on --calib)")
-    m.add_argument("--formats", default=",".join(FORMATS))
-    m.add_argument("--work", help="work directory (default: work/<model name>)")
     m.add_argument("--out", help="output GGUF (default: in the work directory)")
-    m.add_argument("--llama-cpp", help="llama.cpp directory (default: LLAMA_CPP_DIR)")
-    m.add_argument("--n-tokens", type=int, default=512, help="calibration tokens for cost prediction")
-    m.add_argument("--threads", type=int, default=os.cpu_count(), help="quantization threads")
-    m.add_argument("--method", choices=["fisher", "exact"], default="fisher",
-                   help="fisher: linear in depth (default); exact: KL propagated to the logits, slower")
-    m.add_argument("--samples", type=int, default=128, help="Fisher samples (32 is too noisy)")
+    for s in (m, c):
+        s.add_argument("hf_dir", help="Hugging Face model directory")
+        s.add_argument("--calib", required=True, help="calibration text (imatrix and cost prediction)")
+        s.add_argument("--imatrix", help="existing imatrix (otherwise computed on --calib)")
+        s.add_argument("--formats", default=",".join(FORMATS))
+        s.add_argument("--work", help="work directory (default: work/<model name>)")
+        s.add_argument("--llama-cpp", help="llama.cpp directory (default: LLAMA_CPP_DIR)")
+        s.add_argument("--n-tokens", type=int, default=512, help="calibration tokens for cost prediction")
+        s.add_argument("--threads", type=int, default=os.cpu_count(), help="quantization threads")
+        s.add_argument("--method", choices=["fisher", "exact"], default="fisher",
+                       help="fisher: linear in depth (default); exact: KL propagated to the logits, slower")
+        s.add_argument("--samples", type=int, default=128, help="Fisher samples (32 is too noisy)")
     args = p.parse_args(argv)
 
     t0 = time.time()
@@ -39,8 +42,13 @@ def main(argv=None):
 
     work = args.work or f"work/{args.hf_dir.rstrip('/').split('/')[-1]}"
     pipe = Pipeline(args.hf_dir, work, args.calib, LlamaCpp(args.llama_cpp), args.imatrix, args.n_tokens, args.threads, log)
-    choice, r = pipe.run(args.like, args.formats.split(","), args.out, args.method, args.samples)
+    if args.command == "costs":
+        pipe.prepare()
+        costs = pipe.costs(args.formats.split(","), args.method, args.samples)
+        log(f"{len(costs)} costs in {pipe.work / f'costs-{args.method}.csv'}")
+        return
 
+    choice, r = pipe.run(args.like, args.formats.split(","), args.out, args.method, args.samples)
     mib = 2 ** 20
     log(f"map: {r['map']}")
     log(f"GGUF: {r['gguf']} ({r['file_bytes'] / mib:.1f} MiB, reference {r['ref_file_bytes'] / mib:.1f} MiB)")

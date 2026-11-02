@@ -5,6 +5,11 @@ maximum, share of tokens with the same top-1 as BF16, and |PPL - PPL_BF16|. The
 BF16 logits (.kld) are computed once and kept; they include the tokens, so every
 model sees exactly the same ones.
 
+Texts in --special-texts (chat-template text) get their BF16 logits from
+bench/perplexity (llamap-perplexity), which parses the template's special tokens;
+stock llama-perplexity tokenizes them as plain text. Only the BF16 run needs it:
+the quantized models are then scored on the tokens stored in the .kld file.
+
   python bench/eval_kl_t.py --bf16 work/X/bf16.gguf --texts wiki.test.raw,code.txt \
       --out results.csv unsloth=~/models/X-UD-Q4_K_XL.gguf llamap=work/X/llamap-X-UD-Q4_K_XL.gguf
 """
@@ -31,7 +36,9 @@ FIELDS = {
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--bf16", required=True)
-    p.add_argument("--texts", required=True, help="comma-separated text files")
+    p.add_argument("--texts", default="", help="comma-separated text files")
+    p.add_argument("--special-texts", default="", help="comma-separated text files with special tokens")
+    p.add_argument("--special-perplexity", default=Path(__file__).parent / "perplexity/build/llamap-perplexity")
     p.add_argument("--kld-dir", help="where to keep the BF16 logits (default: next to the BF16)")
     p.add_argument("--chunks", type=int, default=80)
     p.add_argument("--out", required=True)
@@ -44,11 +51,13 @@ def main():
     kld_dir.mkdir(parents=True, exist_ok=True)
     common = ["-c", 512, "--chunks", args.chunks, "-ngl", 99]
     rows = []
-    for text in args.texts.split(","):
+    special = [t for t in args.special_texts.split(",") if t]
+    for text in [t for t in args.texts.split(",") if t] + special:
+        tool = args.special_perplexity if text in special else llama.bin / "llama-perplexity"
         text = Path(text).expanduser()
         base = kld_dir / f"{text.stem}-c512-{args.chunks}.kld"
         if not base.exists():
-            llama.tool("llama-perplexity", "-m", args.bf16, "-f", text, *common, "--kl-divergence-base", base)
+            llama.run([tool, "-m", args.bf16, "-f", text, *common, "--kl-divergence-base", base])
         for spec in args.models:
             label, path = spec.split("=", 1)
             out = llama.tool("llama-perplexity", "-m", Path(path).expanduser(), *common,
