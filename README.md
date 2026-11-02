@@ -5,8 +5,10 @@ Per-tensor precision maps for llama.cpp / GGUF quantization.
 Given a Hugging Face model and a size budget, llamap measures how much each
 weight matrix hurts the model output (KL divergence against BF16) when it alone
 is quantized, in each format. It then picks one format per matrix to minimise
-the total under the budget, and builds the GGUF with `llama-quantize
+the total under the budget, and builds the GGUF with stock `llama-quantize
 --tensor-type-file`.
+
+![Format chosen for each block matrix of Qwen3-8B by Unsloth, EAddario's --target-size and llamap, at the same file size](docs/qwen3-8b-q5-maps.png)
 
 ## Usage
 
@@ -31,6 +33,20 @@ or of a llama-quantize preset. `token_embd` and `output` keep the reference's
 types. Everything is cached in `work/<model>/`: changing the budget only
 re-runs the solver and the build.
 
+## Requirements
+
+- **llama.cpp**, built with shared libraries (`BUILD_SHARED_LIBS=ON`, the
+  default on Linux): llamap loads `build/bin/libggml-base.so` and calls
+  `llama-quantize`, `llama-imatrix`, `llama-perplexity` and
+  `convert_hf_to_gguf.py`. Tested on Linux (WSL2) only.
+- **GPU**: the model is loaded in BF16 and each block is replayed in float32.
+  Peak memory measured on Qwen3-8B is 26 GB (BF16 weights, `lm_head` in float32,
+  gradient buffers), so an 8B needs a 32 GB GPU. Peak RAM fits in 24 GB.
+- **Python** ≥ 3.10. Tested with Python 3.14, torch 2.14.1 (CUDA 13.0),
+  transformers 5.20.2, gguf 0.19.0, numpy 2.5.4.
+- **Architectures**: `llama` (Llama 3.x, SmolLM2) and `qwen3`, dense models
+  only. Any other architecture stops with an explicit error.
+
 ## Results
 
 Three maps at the same file sizes, the sizes of Unsloth's Dynamic 2.0
@@ -44,9 +60,8 @@ EAddario and llamap use the same imatrix, and the sizes match within 0.2 MB.
 `token_embd` and `output` are identical in all three, so only the block matrices differ.
 
 KL divergence against BF16 (`llama-perplexity --kl-divergence`, 80 × 512 tokens
-per text), averaged over 6 texts for Llama and 7 for Qwen3. The texts are
-wikitext test and valid, a book, code, chat, chat with the model's template,
-and Qwen3 thinking traces. In brackets: the number of texts on which llamap is
+per text), averaged over 6 texts for Llama and 7 for Qwen3 (see
+[Reproduce](#reproduce)). In brackets: the number of texts on which llamap is
 better.
 
 | Model | Budget | Unsloth | EAddario | llamap | vs Unsloth | vs EAddario |
@@ -62,7 +77,8 @@ better.
 
 - The gap with EAddario is largest at high precision (Q5). There, an error
   estimated from the weights ranks tensors poorly: on Llama, the last layers cost
-  ~3× more in output KL for the same relative error.
+  ~3× more in output KL for the same relative error. The image above shows the
+  result: llamap spends its bits on `attn_v` at almost every depth.
 - Inference speed is unchanged. llama-bench on CUDA gives the same pp512 within
   1 %, and tg128 at most 4 % lower (Q2, against Unsloth).
 - Build time on an 8B: llamap takes ~15 min for the first budget (cost
@@ -71,13 +87,116 @@ better.
 - Limits: dense models only (no MoE yet); needs PyTorch, the HF weights and a
   GPU; two models tested.
 
+## Validation
+
+The predicted costs were checked against a ground truth: the measured ΔKL of each
+tensor when it alone is degraded. Everything else is kept in Q8_0 with the
+imatrix, one tensor goes to Q2_K, and the KL against BF16 is measured on 80 × 512
+tokens of wikitext-2 test (bartowski's degrade-one protocol). This ground
+truth was computed with the research prototype that preceded this repo; it
+costs one `llama-perplexity` run per tensor.
+
+Spearman correlation with the measured ΔKL, Q2_K, all block matrices:
+
+| Cost | Qwen3-1.7B (196 tensors) | SmolLM2-1.7B (168 tensors) |
+|---|---|---|
+| imatrix-weighted weight error | −0.22 | – |
+| error at the block output, ‖e‖² / ‖h‖² | 0.94 | 0.86 |
+| KL at the model output, exact (`--method exact`) | 0.93 | 0.95 |
+| KL at the model output, Fisher (`--method fisher`) | 0.90 (32 samples) | 0.95 (128 samples) |
+
+- **Depth.** The error at the block output assumes that the same relative error
+  costs the same at any depth. On SmolLM2, the ratio of measured ΔKL to this
+  error grows with depth (correlation with the layer index 0.86). The output KL
+  removes most of this bias (0.41). Within a role, the rank correlation on
+  SmolLM2 goes from −0.43…+0.39 to +0.61…+0.88.
+- **Fisher vs exact.** On Llama 3.1 8B, the 11 formats (2 464 tensor × format
+  pairs) give a Spearman correlation of 0.998 with 128 samples. With 32 samples,
+  the noise changes enough choices at the margin to visibly degrade the Q5 map:
+  128 is the default.
+- **Additivity.** The solver assumes that costs add up. On Llama 3.1 8B, the
+  output KL measured with all the matrices of a map quantized at once, divided
+  by the sum of the individual costs, is 1.01 for the Q3 and Q4 maps, 0.96 to
+  1.14 for Q5 maps, and 1.24 for the Q2 map (1.09 to 1.31 for random Q2-level
+  maps). The predicted order of the Q5 maps is the measured order.
+  (`bench/additivity_t.py`)
+
+## Reproduce
+
+Models and files:
+
+| | Llama 3.1 8B | Qwen3-8B |
+|---|---|---|
+| HF weights | `unsloth/Llama-3.1-8B-Instruct` @ `4699cc75b550` | `Qwen/Qwen3-8B` @ `b968826d9c46` |
+| Unsloth GGUF | `unsloth/Llama-3.1-8B-Instruct-GGUF` @ `600b0020115f` | `unsloth/Qwen3-8B-GGUF` @ `a6adef130ffb` |
+
+- llama.cpp `caa8191df159` (2026-10-26). EAddario: branch `quantize` of PR
+  #15550, commit `145d435eb613`.
+- **imatrix** (shared by EAddario and llamap): `llama-imatrix -m bf16.gguf -f
+  wiki.train.raw -c 512 --chunks 200`, on wikitext-2-raw train.
+- **llamap calibration**: the first 512 tokens of a 4 kB excerpt of
+  wikitext-2-raw train, characters 395 211 to 399 209 of `wiki.train.raw`.
+- **Evaluation texts**, all disjoint from the calibration data:
+  - `test`, `valid`: wikitext-2-raw test and validation;
+  - `book`: Moby Dick, Project Gutenberg #2701, full text;
+  - `code`: the concatenation of llama.cpp's `src/*.cpp` at the commit above;
+  - `chat`: UltraChat 200k (`test_sft`), ~400 k characters as plain
+    `User:` / `Assistant:` text;
+  - `chat_template`: the same conversations, with the model's chat template;
+  - `chat_thinking` (Qwen3 only): 48 Qwen3-8B BF16 thinking traces on UltraChat
+    `test_sft` prompts.
+
+  For Llama, the template's special tags were parsed as special tokens (with a
+  patched `llama-perplexity` from the prototype); for Qwen3, with stock
+  `llama-perplexity`, they were tokenized as plain text.
+
+Commands, for each budget `Qn`:
+
+```
+# EAddario (PR #15550 build)
+llama-quantize --imatrix X.imatrix.gguf --target-size $(stat -c %s X-UD-Qn_K_XL.gguf) \
+    --state-file X.state X-bf16.gguf X-eaddario-Qn.gguf
+# llamap, at the same budget
+llamap map <hf_dir> --like X-eaddario-Qn.gguf --calib calib.txt --imatrix X.imatrix.gguf --threads 16
+# KL against BF16, mean / percentiles / same top-1 / |ΔPPL|
+python bench/eval_kl_t.py --bf16 X-bf16.gguf --texts wiki.test.raw,wiki.valid.raw,book.txt,code.txt,chat.txt \
+    --out results.csv unsloth=X-UD-Qn_K_XL.gguf eaddario=X-eaddario-Qn.gguf llamap=work/X/llamap-X-eaddario-Qn-fisher.gguf
+# the image
+python bench/plot_maps_t.py --out maps.png unsloth=X-UD-Q5_K_XL.gguf eaddario=X-eaddario-Q5.gguf \
+    llamap=work/X/map-X-eaddario-Q5-fisher.tensor-types.txt
+```
+
+## Related work and credits
+
+- **bartowski**, *Per-tensor layout maps for GGUF quantization* (Hugging Face
+  blog, September 2026). It measures each tensor's sensitivity with degrade-one
+  runs and turns it into a `--tensor-type-file` with a solver. llamap uses the
+  same output and the same protocol as ground truth. Its contribution is to
+  predict these costs for every format in one pass, instead of one
+  `llama-perplexity` run per tensor and format.
+- **EAddario**, `--target-bpw` / `--target-size` in
+  [llama.cpp PR #15550](https://github.com/ggml-org/llama.cpp/pull/15550):
+  per-tensor types under a budget, from an imatrix-weighted weight error.
+- **Unsloth**, [Dynamic 2.0 GGUFs](https://huggingface.co/unsloth): per-layer
+  type choices, and the published files used as the reference sizes.
+- **llama.cpp**: the k-quants, the IQ formats and the imatrix (ikawrakow), and
+  `llama-perplexity --kl-divergence`.
+- **Second-order sensitivity.** Using the Hessian or the Fisher information to
+  rank layers for mixed precision is not new. See HAWQ (Dong et al., ICCV 2019,
+  [arXiv:1905.03696](https://arxiv.org/abs/1905.03696)) and HAWQ-V2 (NeurIPS
+  2020, [arXiv:1911.03852](https://arxiv.org/abs/1911.03852)), and, for LLMs,
+  SqueezeLLM (Kim et al., ICML 2024,
+  [arXiv:2306.07629](https://arxiv.org/abs/2306.07629)). llamap applies the idea
+  to the error at each block output for the GGUF formats, and checks it against
+  measured KL.
+
 ## Layout
 
 | file | role |
 |---|---|
 | `llamap/pipeline.py` | the chain: prepare, costs, budget, solve, build |
 | `llamap/predict.py` | cost of each matrix: KL at the output with only that matrix quantized |
-| `llamap/hf_gguf.py` | HF ↔ GGUF names, q/k row permutation |
+| `llamap/hf_gguf.py` | HF ↔ GGUF names, q/k row permutation, supported architectures |
 | `llamap/solver.py` | multiple-choice knapsack (Lagrangian relaxation + greedy fill) |
 | `llamap/build.py` | `--tensor-type-file`, llama-quantize, checks |
 | `llamap/quantize.py` | imatrix loading, in-memory quantization of each format |
@@ -85,6 +204,6 @@ better.
 | `llamap/llamacpp.py` | calls to the llama.cpp tools |
 | `llamap/cli.py` | command line |
 | `tests/*_t.py` | unit tests (`pytest`) |
-| `bench/*_t.py` | measurements: KL against BF16, Fisher vs exact costs, additivity |
+| `bench/*_t.py` | measurements: KL against BF16, Fisher vs exact costs, additivity, map heatmaps |
 
 Convention: every test or measurement file ends in `_t`.

@@ -13,6 +13,9 @@ from gguf import MODEL_ARCH_NAMES, GGUFReader, get_tensor_name_map
 from gguf.quants import dequantize
 
 FLOAT_TYPES = ("F32", "F16", "BF16")
+# GGUF architectures tested end to end (Llama 3.1, SmolLM2, Qwen3). Others may need new
+# reorderings or block call conventions, and MoE models need per-expert handling.
+SUPPORTED_ARCHS = ("llama", "qwen3")
 
 
 class GGUFFile:
@@ -57,6 +60,8 @@ class WeightMapper:
 
     def __init__(self, model, bf16: GGUFFile):
         arch_name = bf16.field("general.architecture")
+        if arch_name not in SUPPORTED_ARCHS:
+            raise ValueError(f"architecture '{arch_name}' is not supported yet (supported: {', '.join(SUPPORTED_ARCHS)})")
         arch = next(a for a, n in MODEL_ARCH_NAMES.items() if n == arch_name)
         self.n_blocks = bf16.field(f"{arch_name}.block_count")
         n_head = bf16.field(f"{arch_name}.attention.head_count")

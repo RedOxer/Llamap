@@ -5,6 +5,7 @@ Needs LLAMA_CPP_DIR and a work directory with bf16.gguf and imatrix.gguf
 """
 import os
 import struct
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -44,16 +45,20 @@ def test_dequantize_matches_gguf_py(llama, fmt):
 
 @needs_model
 @pytest.mark.parametrize("fmt", ["q2_k", "q6_k", "iq2_xs", "iq4_xs"])
-def test_same_bytes_as_llama_quantize(llama, tmp_path, fmt):
-    pure = tmp_path / f"{fmt}.gguf"
-    # token_embd has no imatrix entry, which IQ formats require; only block matrices are compared.
-    llama.quantize(WORK / "bf16.gguf", pure, fmt.upper(), WORK / "imatrix.gguf", pure=True, token_embd="q8_0")
-    q = quantized_format(llama, fmt)
-    ref = GGUFFile(pure)
-    assert set(q.quantized_matrices()) == set(ref.quantized_matrices())
-    for n in ["blk.0.attn_q.weight", "blk.5.attn_v.weight", "blk.12.ffn_down.weight"]:
-        assert q.n_bytes(n) == ref.n_bytes(n)
-        assert np.array_equal(q.quantize(n), np.asarray(ref.tensors[n].data).ravel().view(np.uint8)), n
+def test_same_bytes_as_llama_quantize(llama, fmt):
+    # Written next to the model, not in pytest's tmp_path: /tmp is often in RAM, and pytest
+    # keeps the last runs' directories.
+    with tempfile.TemporaryDirectory(dir=WORK) as d:
+        pure = Path(d) / f"{fmt}.gguf"
+        # token_embd has no imatrix entry, which IQ formats require; only block matrices are compared.
+        llama.quantize(WORK / "bf16.gguf", pure, fmt.upper(), WORK / "imatrix.gguf", pure=True, token_embd="q8_0")
+        q = quantized_format(llama, fmt)
+        ref = GGUFFile(pure)
+        assert set(q.quantized_matrices()) == set(ref.quantized_matrices())
+        for n in ["blk.0.attn_q.weight", "blk.5.attn_v.weight", "blk.12.ffn_down.weight"]:
+            assert q.n_bytes(n) == ref.n_bytes(n)
+            assert np.array_equal(q.quantize(n), np.asarray(ref.tensors[n].data).ravel().view(np.uint8)), n
+        del ref  # release the memory map before the directory is removed
 
 
 def test_legacy_imatrix_divides_by_ncall(tmp_path):
