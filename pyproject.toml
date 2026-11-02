@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llamap"
+version = "0.1.0"
+description = "Per-tensor precision maps for llama.cpp / GGUF quantization"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch",
+    "transformers",
+    "safetensors",
+    "gguf",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+llamap = "llamap.cli:main"
+
+[tool.setuptools]
+packages = ["llamap"]
+
+[tool.pytest.ini_options]
+# Every test or measurement file ends in "_t".
+testpaths = ["tests"]
+python_files = ["*_t.py"]
